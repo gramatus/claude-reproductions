@@ -1,133 +1,73 @@
-# [BUG] VS Code Extension Ignores Hook `permissionDecision: "ask"` - CLI/Extension Behavior Divergence
+# [BUG] VS Code Extension Ignores Hook `permissionDecision: "ask"`
 
-## Environment
+Copy-paste content for the GitHub issue template fields:
 
-- **Claude Code CLI version**: 2.0.61
-- **VS Code Extension version**: 2.0.61
-- **Operating System**: Debian 12 in GitHub Codespaces
-- **VS Code version**: 1.106.3
+---
 
-## Bug Description
+## What's Wrong?
 
-The VS Code extension does not respect `hookSpecificOutput.permissionDecision: "ask"` from PreToolUse hooks. The same hook configuration works correctly in CLI (prompts user for permission) but is silently ignored in the VS Code extension.
+The VS Code extension ignores `hookSpecificOutput.permissionDecision: "ask"` from PreToolUse hooks. The CLI correctly prompts the user for permission, but VS Code silently falls back to permission rules.
 
-This creates a significant behavior divergence between CLI and VS Code extension, making it impossible to implement consistent permission workflows across both interfaces.
+This creates a security gap: hooks cannot enforce "ask before executing" policies in VS Code, only in CLI.
+
+Hook decisions `"allow"`, `"deny"`, `"approve"`, `"block"` all work consistently in both interfaces—only `"ask"` is broken.
+
+---
+
+## What Should Happen?
+
+When a hook returns `permissionDecision: "ask"`, VS Code should show a permission prompt (same as CLI does).
+
+---
 
 ## Steps to Reproduce
 
-### 1. Create hook configuration
+1. Fork and open in GitHub Codespaces: https://github.com/gramatus/claude-reproductions
+2. In Claude Code (VS Code extension), run: `run: echo "test-20"`
+3. Observe: command runs silently without prompting
+4. Compare with CLI: open terminal, run `claude`, then `run: echo "test-20"`
+5. Observe: CLI correctly shows permission prompt
 
-**`.claude/settings.json`**:
+See full test matrix: https://github.com/gramatus/claude-reproductions/blob/main/permissions-bug/REPRODUCE.md
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/hook-ask-test.sh \"$CLAUDE_TOOL_INPUT\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+---
 
-### 2. Create test hook script
+## Is this a regression?
 
-**`hook-ask-test.sh`**:
+I don't know
 
-```bash
-#!/bin/bash
-# Returns "ask" decision for specific test commands
-INPUT="$1"
+---
 
-if echo "$INPUT" | grep -q "hook-ask-test"; then
-    echo '{"hookSpecificOutput": {"permissionDecision": "ask"}, "reason": "Testing ask behavior"}'
-    exit 0
-fi
+## Claude Code Version
 
-# Defer to permission system for other commands
-echo '{"reason": "No hook match"}'
-exit 0
-```
+2.0.61
 
-### 3. Test in CLI
+---
 
-```bash
-claude
-> run: echo "hook-ask-test"
-```
+## Platform
 
-**Expected & Actual (CLI)**: User is prompted for permission. Hook "ask" decision is respected.
+Anthropic API
 
-### 4. Test in VS Code Extension
+---
 
-Open Claude Code panel in VS Code, send same prompt:
+## Operating System
 
-```
-run: echo "hook-ask-test"
-```
+Ubuntu/Debian Linux
 
-**Expected**: User is prompted for permission (same as CLI)
-**Actual**: Command executes based on permission rules, hook "ask" decision is ignored
+---
 
-## Test Matrix Results
+## Terminal/Shell
 
-| Hook Output Format                                        | Exit Code | CLI Behavior     | VS Code Behavior | Consistent? |
-| --------------------------------------------------------- | --------- | ---------------- | ---------------- | ----------- |
-| `{"decision": "approve"}`                                 | 0         | Runs silently    | Runs silently    | ✓           |
-| `{"decision": "block", "reason": "x"}`                    | 0         | Blocked          | Blocked          | ✓           |
-| `{"hookSpecificOutput": {permissionDecision: "allow"}}`   | 0         | Runs silently    | Runs silently    | ✓           |
-| `{"hookSpecificOutput": {permissionDecision: "deny"}}`    | 0         | Blocked          | Blocked          | ✓           |
-| **`{"hookSpecificOutput": {permissionDecision: "ask"}}`** | 0         | **Prompts user** | **Ignored**      | ✗           |
-| stderr message                                            | 2         | Blocked          | Blocked          | ✓           |
+VS Code integrated terminal
 
-## Impact
+---
 
-1. **Security workflows broken**: Cannot implement "ask before executing" policies that work consistently across interfaces
-2. **Permission escalation**: Commands that should require user confirmation in VS Code execute without prompting
-3. **Documentation mismatch**: Hook documentation implies consistent behavior across interfaces
-4. **Unpredictable UX**: Users get different permission experiences depending on interface choice
+## Additional Information
 
-## Workaround
+**Workaround**: Use `{"decision": "block"}` instead of `"ask"`. Works in both environments but removes case-by-case approval.
 
-Use `{"decision": "block"}` instead of "ask" for critical security controls. This works in both environments but removes the ability to let users approve case-by-case.
-
-## Additional Context
-
-### Attempted Fixes (None Worked)
-
-1. **`claudeCode.claudeProcessWrapper`** pointed to system CLI binary (`/home/node/.local/bin/claude`) - no effect
-2. Various hook output format variations - "ask" specifically is ignored regardless of format
-
-### Related Issues
-
+**Related issues**:
 - #12604 - Extension ignores permission settings
 - #13028 - Permissions in settings.local.json not respected
-- #10801 - No way to bypass MCP tool approval prompts
-- #8727 - Doesn't support custom API endpoints from settings.json
 
-### Root Cause Hypothesis
-
-The VS Code extension appears to have a separate permission handling implementation that:
-
-1. Correctly processes "allow"/"approve" and "deny"/"block" decisions from hooks
-2. Does not implement the "ask" code path that exists in CLI
-3. Falls back to the standard permission system when encountering "ask"
-
-## Expected Resolution
-
-VS Code extension should implement the same "ask" behavior as CLI:
-
-1. When hook returns `permissionDecision: "ask"`, show permission prompt to user
-2. User can approve or deny the specific tool invocation
-3. Behavior should be identical to CLI experience
-
-## Reproduction Repository
-
-The bug should be easily reproducible in https://github.com/gramatus/claude-reproductions.
+**Full reproduction repo**: https://github.com/gramatus/claude-reproductions/tree/main/permissions-bug
