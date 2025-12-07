@@ -69,7 +69,6 @@
       "Bash(ssh:*)",
       "Bash(scp:*)",
       "Bash(nc:*)",
-      "Bash(curl:*)",
       "Bash(wget:*)",
       "Bash(eval:*)"
     ],
@@ -77,6 +76,7 @@
       "Bash(rm:*)",
       "Bash(cp:*)",
       "Bash(mv:*)",
+      "Bash(curl:*)",
       "Bash(git push:*)",
       "Bash(git reset:*)",
       "Bash(git clean:*)",
