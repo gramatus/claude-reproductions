@@ -19,6 +19,73 @@ def get_workspace_root():
     return os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
 
 
+def load_settings():
+    """Load settings.json from the .claude directory."""
+    workspace_root = get_workspace_root()
+    settings_path = os.path.join(workspace_root, '.claude', 'settings.json')
+    try:
+        with open(settings_path, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def parse_bash_permission_patterns(permission_list):
+    """Extract command names from Bash permission patterns.
+
+    Parses patterns like "Bash(sudo:*)" -> "sudo"
+    Returns list of (regex_pattern, command_name) tuples.
+    """
+    commands = []
+    pattern = re.compile(r'^Bash\(([^:)]+)(?::\*)?\)$')
+
+    for item in permission_list:
+        match = pattern.match(item)
+        if match:
+            cmd_name = match.group(1)
+            # Create regex pattern for the command
+            regex = rf'\b{re.escape(cmd_name)}\b'
+            commands.append((regex, cmd_name))
+
+    return commands
+
+
+def get_denied_commands():
+    """Get list of denied commands from settings.json.
+
+    Returns list of (regex_pattern, command_name) tuples.
+    Includes both 'deny' and 'ask' permissions since both should
+    be flagged when bypassing prefix matching via pipes/chains.
+    """
+    settings = load_settings()
+    permissions = settings.get('permissions', {})
+
+    deny_list = permissions.get('deny', [])
+    ask_list = permissions.get('ask', [])
+
+    # Combine both lists - commands in ask should also be flagged
+    # when they appear in pipes/chains (bypassing prefix matching)
+    all_restricted = deny_list + ask_list
+
+    commands = parse_bash_permission_patterns(all_restricted)
+
+    # Fallback to hardcoded list if settings couldn't be loaded
+    if not commands:
+        return [
+            (r'\bcurl\b', 'curl'),
+            (r'\bwget\b', 'wget'),
+            (r'\bnc\b', 'nc'),
+            (r'\bssh\b', 'ssh'),
+            (r'\bscp\b', 'scp'),
+            (r'\bsudo\b', 'sudo'),
+            (r'\beval\b', 'eval'),
+            (r'\bchmod\b', 'chmod'),
+            (r'\bchown\b', 'chown'),
+        ]
+
+    return commands
+
+
 def has_output_redirect(command):
     """Check if command contains output redirection."""
     # Match > or >> followed by a path (but not 2>&1 style redirects)
@@ -110,18 +177,10 @@ def check_denied_commands(command):
 
     Claude Code's deny rules only match command prefix (e.g., "curl ..." but not "echo | curl").
     This function checks ALL subcommands in pipes/chains.
+
+    The denied patterns are loaded dynamically from settings.json.
     """
-    denied_patterns = [
-        (r'\bcurl\b', 'curl'),
-        (r'\bwget\b', 'wget'),
-        (r'\bnc\b', 'nc/netcat'),
-        (r'\bssh\b', 'ssh'),
-        (r'\bscp\b', 'scp'),
-        (r'\bsudo\b', 'sudo'),
-        (r'\beval\b', 'eval'),
-        (r'\bchmod\b', 'chmod'),
-        (r'\bchown\b', 'chown'),
-    ]
+    denied_patterns = get_denied_commands()
 
     subcommands = extract_subcommands(command)
     issues = []
@@ -131,11 +190,11 @@ def check_denied_commands(command):
             if re.search(pattern, subcmd):
                 if operator:
                     issues.append(
-                        f"Denied command '{name}' in pipeline/chain (bypasses prefix matching)")
+                        f"Restricted command '{name}' in pipeline/chain (bypasses prefix matching)")
                 # If it's the first command (no operator), Claude's deny rules should catch it
                 # But we flag it anyway for safety
                 else:
-                    issues.append(f"Denied command '{name}' detected")
+                    issues.append(f"Restricted command '{name}' detected")
 
     return issues
 
