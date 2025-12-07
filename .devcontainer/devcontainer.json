@@ -14,5 +14,6 @@
         "esbenp.prettier-vscode"
       ]
     }
-  }
+  },
+  "postCreateCommand": "chmod +x .devcontainer/install-claude-cli.sh && bash .devcontainer/install-claude-cli.sh"
 }
