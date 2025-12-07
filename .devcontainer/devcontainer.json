@@ -10,7 +10,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "anthropic.claude-code"
+        "anthropic.claude-code",
+        "esbenp.prettier-vscode"
       ]
     }
   }
