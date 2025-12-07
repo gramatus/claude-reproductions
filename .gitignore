@@ -20,3 +20,5 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+.cache/claude-status.txt
+delay-bug/test-output/
