@@ -33,6 +33,8 @@ We attempted to reproduce the UI rendering delay bug using the exact same refact
 
 ## Environment Data: Reproduction Codespace (Not Affected)
 
+**Repository**: `gramatus/claude-reproductions` ([GitHub](https://github.com/gramatus/claude-reproductions))
+
 ```
 Claude Code Version: 2.0.61
 Platform: Linux codespaces-6f5096 6.8.0-1030-azure x86_64
@@ -60,14 +62,17 @@ API Latency: Connect 19ms, Total 152ms
 
 ---
 
-## Environment Data: Original Codespace (Affected - TO BE FILLED IN)
+## Environment Data: Original Codespace (Affected)
+
+**Repository**: `helse-sorost/internal-developer-portal`
 
 ```
-Claude Code Version: [RUN: claude --version]
-Platform: [RUN: uname -a]
-Memory: [RUN: free -h]
-CPUs: [RUN: nproc]
-API Latency: [RUN: curl -w "Connect: %{time_connect}s, Total: %{time_total}s\n" -o /dev/null -s https://api.anthropic.com]
+Claude Code Version: 2.0.61
+Platform: Linux 6.8.0-1030-azure x86_64
+Memory: 31Gi total, 19Gi used, 12Gi available
+CPUs: 8
+Node: v22.16.0
+npm: 10.9.2
 ```
 
 ### Status Log (from original bug occurrence on Original Codespace)
@@ -92,96 +97,101 @@ API Latency: [RUN: curl -w "Connect: %{time_connect}s, Total: %{time_total}s\n" 
 **Actual work time**: 3 min 23s (15:34:15 → 15:37:38)
 **UI lag after completion**: 21 min 13s (15:37:38 → 15:58:51)
 
+### Detailed Diagnostics (Original Codespace - 2025-12-07)
+
+| Metric                       | Value                 | Notes                                    |
+| ---------------------------- | --------------------- | ---------------------------------------- |
+| **Claude processes**         | **34**                | 🚨 Very high - each ~375MB (~12GB total) |
+| **Bash startup**             | 126ms                 | ✅ Acceptable                            |
+| **Env variables**            | 156                   | ✅ Normal                                |
+| **VS Code extensions**       | 25                    | ✅ Moderate                              |
+| **inotify max_user_watches** | 524288                | ✅ Standard                              |
+| **Project Claude hooks**     | `workspace-guard.py`  | ⚠️ Python hook runs on every tool call   |
+| **User Claude hooks**        | None                  | ✅                                       |
+| **Global git hooks**         | None (samples only)   | ✅                                       |
+| **Shell config**             | Vanilla Debian bashrc | ✅ No nvm/rbenv/pyenv                    |
+
+**Top memory consumers (at time of diagnosis):**
+
+```
+3x VS Code extension hosts      ~2.5GB each (~7.5GB total)
+12+ Claude Code processes       ~375MB each (~4.5GB total)
+2x Pylance language servers     ~600MB each (~1.2GB total)
+```
+
+**Key Observations:**
+
+1. **34 Claude processes running** - significantly higher than expected for a single session
+2. **Memory pressure**: Only 12Gi available of 31Gi (vs ~25Gi available on reproduction Codespace)
+3. **workspace-guard.py hook** adds Python interpreter startup latency to every tool call
+4. **PS1 prompt** has git branch detection but uses `--no-optional-locks` (acceptable)
+5. **.bashrc is vanilla** - no slow tool version managers installed
+
 ---
 
-## Instructions for Investigating on the Original Codespace
+## Instructions for Investigating on the Reproduction Codespace
 
-If you're Claude Code on the original Codespace reading this document, your task is to:
+If you're Claude Code on the **reproduction Codespace** (`gramatus/claude-reproductions`) reading this document, your task is to:
 
-1. **Fill in the environment data** for the original Codespace (run the commands in the "TO BE FILLED IN" section above)
-2. **Compare environments** - identify differences between the original Codespace and the reproduction Codespace
-3. **Run diagnostic commands** (see below)
-4. **Form hypotheses** about what causes the 47x difference in UI lag
+1. **Run the same diagnostic commands** as documented above for comparison
+2. **Compare environments** - identify differences with the original Codespace data above
+3. **Test hypotheses** about what causes the 47x difference in UI lag
 
 ### Environment Comparison Commands
 
-Run these on the original Codespace and compare with reproduction Codespace data above:
+Run these on the reproduction Codespace and compare with original Codespace data above:
 
 ```bash
-# Claude Code version
-claude --version
+# Count Claude processes (original had 34!)
+ps aux | grep -c claude
 
-# System info
-uname -a
-cat /etc/os-release 2>/dev/null | head -5
-
-# VS Code version (if applicable)
-code --version 2>/dev/null
-
-# Memory and CPU
+# Memory availability (original had only 12Gi available)
 free -h
-nproc
 
-# Network latency to Anthropic API
-curl -w "Connect: %{time_connect}s, Total: %{time_total}s\n" -o /dev/null -s https://api.anthropic.com
-```
+# Check for Claude hooks (original has workspace-guard.py)
+ls -la .claude/hooks/ 2>/dev/null || echo "No project hooks"
+ls -la ~/.claude/hooks/ 2>/dev/null || echo "No user hooks"
 
-### Debug Log Analysis
+# Bash startup time (original was 126ms)
+time bash -i -c exit
 
-After running a test task on the original Codespace:
-
-```bash
-# Find most recent debug log
-LATEST=$(ls -t ~/.claude/debug/*.txt 2>/dev/null | head -1)
-echo "Log file: $LATEST"
-
-# Count tool executions
-echo "Total PostToolUse events:"
-grep -c "PostToolUse" "$LATEST"
-
-# Show timing spread
-echo ""
-echo "First PostToolUse:"
-grep "PostToolUse" "$LATEST" | head -1
-
-echo ""
-echo "Last PostToolUse:"
-grep "PostToolUse" "$LATEST" | tail -1
-
-# Check for parallel dispatch
-echo ""
-echo "Parallel dispatch check (multiple PreToolHooks within 100ms):"
-grep "executePreToolHooks" "$LATEST" | tail -20
+# VS Code extensions count (original had 25)
+code --list-extensions 2>/dev/null | wc -l
 ```
 
 ---
 
 ## Potential Differentiators to Investigate
 
-Things that might explain different delay magnitudes:
+Based on diagnostics, these are the **prime suspects** (ranked by likelihood):
 
-1. **Claude Code version** - Bug may be version-specific
-2. **Codespace resources** - CPU/memory affecting rendering
-3. **Network latency** - API response streaming speed (Reproduction Codespace: 152ms total)
-4. **Workspace size** - Larger workspaces may have more overhead
-5. **VS Code extensions** - Other extensions competing for resources
-6. **File watcher load** - More files being watched = more overhead
+| #   | Suspect                       | Original Codespace | Reproduction Codespace | Impact                       |
+| --- | ----------------------------- | ------------------ | ---------------------- | ---------------------------- |
+| 1   | **Claude process count**      | 34 processes       | ? (check this!)        | 🚨 High - memory pressure    |
+| 2   | **Memory available**          | 12Gi available     | ~25Gi available        | 🚨 High - swap/GC pressure   |
+| 3   | **workspace-guard.py hook**   | Present            | Likely absent          | ⚠️ Medium - per-tool latency |
+| 4   | **Workspace size/complexity** | Large monorepo     | Small test repo        | ⚠️ Medium - file watching    |
 
 ### Hypothesis Testing Ideas
 
-| Hypothesis         | Test                                                         |
-| ------------------ | ------------------------------------------------------------ |
-| Network latency    | Compare `curl` timing to API (Reproduction Codespace: 152ms) |
-| Workspace size     | Run same task in empty vs full workspace                     |
-| Version difference | Check Claude Code versions (Reproduction Codespace: 2.0.61)  |
-| Memory pressure    | Monitor `free -h` during task                                |
-| Extension conflict | Disable other VS Code extensions                             |
+| Hypothesis               | Test                                             | Expected Outcome                        |
+| ------------------------ | ------------------------------------------------ | --------------------------------------- |
+| **Process accumulation** | Count Claude processes on reproduction Codespace | Should be much lower than 34            |
+| **Memory pressure**      | Compare `free -h` on both                        | Reproduction should have more available |
+| **Hook overhead**        | Check if reproduction has `.claude/hooks/`       | Likely absent = faster tool calls       |
+| **Fresh Codespace**      | Rebuild original Codespace from scratch          | Should have fewer zombie processes      |
+
+### Recommended Immediate Tests
+
+1. **On reproduction Codespace**: Run `ps aux | grep -c claude` - if significantly lower than 34, process accumulation is a prime suspect
+2. **On original Codespace**: Try `pkill -f "claude.*--type=extensionHost"` to kill orphaned Claude processes (careful!)
+3. **Compare hooks**: If reproduction has no `workspace-guard.py`, that's ~100-200ms saved per tool call
 
 ---
 
 ## Reproduction Steps (If Needed)
 
-To reproduce the same task on the original Codespace:
+To reproduce the same task on the reproduction Codespace (to verify it still doesn't exhibit the bug):
 
 1. Setup monitoring:
    ```bash
@@ -226,22 +236,100 @@ The exact same refactoring task:
 
 This means the investigation should focus on **what's different between the Codespaces**, not on the task itself.
 
+### New Finding: Process Accumulation
+
+The original Codespace has **34 Claude processes** running simultaneously, consuming approximately 12GB of memory. This appears to be process accumulation from multiple VS Code extension host restarts or Claude panel opens/closes. This level of process bloat could explain:
+
+1. **Memory pressure** causing garbage collection pauses
+2. **CPU contention** during streaming response rendering
+3. **IPC overhead** if processes are communicating
+
+The reproduction Codespace likely has far fewer Claude processes due to being freshly created for testing.
+
 ---
 
 ## Current Status
 
 - **Bug does NOT reproduce on reproduction Codespace**: 27s delay is within acceptable range
 - **Bug IS present on original Codespace**: 21-minute delay on a 3-minute task
-- **Root cause unknown**: Need cross-Codespace comparison to identify what triggers the bug
+- **Diagnostics collected on original Codespace**: ✅ Complete (see above)
+- **Prime suspects identified**:
+  1. 🚨 **34 Claude processes** consuming ~12GB memory
+  2. 🚨 **Memory pressure** - only 12Gi available vs 25Gi on reproduction
+  3. ⚠️ **workspace-guard.py hook** adding latency per tool call
 
 ---
 
-## Next Steps for Original Codespace
+## Reproduction Codespace Diagnostics (2025-12-07 23:12 UTC)
 
-1. Fill in the environment data section above
-2. Compare environment details with reproduction Codespace data
-3. Analyze debug logs
-4. Test hypotheses with controlled variations to isolate the cause
-5. Report findings back to user for relay to reproduction Codespace investigation
+Diagnostics run on the reproduction Codespace for comparison:
 
-_Last updated: 2025-12-07_
+| Metric                      | Original Codespace | Reproduction Codespace | Delta      |
+| --------------------------- | ------------------ | ---------------------- | ---------- |
+| **Claude processes**        | **34**             | **10** (6-7 actual)    | 3.4x fewer |
+| **Memory available**        | **12Gi**           | **25Gi**               | 2x more    |
+| **Memory used**             | 19Gi               | 5.7Gi                  | 3.3x less  |
+| **workspace-guard.py hook** | Present            | Present                | Same ⚠️    |
+| **User hooks**              | None               | None                   | Same       |
+| **VS Code extensions**      | 25                 | 16                     | 1.6x fewer |
+| **Bash startup time**       | 126ms              | 11ms                   | 11x faster |
+
+### Top Memory Consumers (Reproduction Codespace)
+
+```
+1x VS Code extension host       ~900MB
+1x Pylance language server      ~546MB
+6x Claude Code processes        ~370MB each (~2.2GB total)
+```
+
+**Total Claude memory footprint**: ~2.2GB (vs ~12GB on original = 5.5x difference)
+
+### Conclusions from Comparison
+
+1. **Process accumulation CONFIRMED as prime suspect** - 34 vs 10 Claude processes (3.4x difference)
+2. **Memory pressure CONFIRMED** - 12Gi vs 25Gi available (2x difference)
+3. **workspace-guard.py RULED OUT** - Both Codespaces have it, so it's not the differentiator
+4. **Shell startup latency** - 126ms vs 11ms (11x difference) suggests accumulated shell cruft on original
+
+### Root Cause Hypothesis
+
+The original Codespace has accumulated ~34 orphaned Claude processes over time (likely from VS Code extension host restarts, panel opens/closes, or crashed sessions). These consume:
+
+- ~12GB of memory (leaving only 12Gi available)
+- CPU cycles during garbage collection
+- IPC overhead if processes are communicating
+
+This memory pressure likely causes the VS Code extension to struggle with rendering streamed responses, resulting in the 21-minute UI lag.
+
+---
+
+## Next Steps
+
+### On Original Codespace (`helse-sorost/internal-developer-portal`)
+
+1. **Kill orphaned Claude processes** (safest first step):
+
+   ```bash
+   # Check current count
+   ps aux | grep -c claude
+
+   # Kill orphaned processes (keep only the active one)
+   pkill -f "claude.*--output-format"
+
+   # Verify reduction
+   ps aux | grep -c claude
+   ```
+
+2. **Rebuild the Codespace** if killing processes doesn't help - this would clear all accumulated state
+
+3. **Test task again** after cleanup to measure if UI lag improves
+
+### Dotfiles Investigation
+
+If dotfiles are suspected:
+
+- Check if dotfiles install anything to `~/.claude/hooks/`
+- Check if dotfiles add heavy shell initialization
+- Compare shell startup time between Codespaces
+
+_Last updated: 2025-12-07 23:15 UTC_
